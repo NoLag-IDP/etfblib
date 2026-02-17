@@ -154,7 +154,7 @@ end
 
 -- BUTTONS
 createScriptButton("Dupe Script", 0, function()
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/NoLag-IDP/etfblib/refs/heads/main/dupe"))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/NoLag-IDP/etfblib/refs/heads/main/dupevisual2"))()
 end)
 
 createScriptButton("Trade Scam Script", 46, function()
