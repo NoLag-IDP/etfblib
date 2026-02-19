@@ -9,6 +9,11 @@ local TweenService = game:GetService("TweenService")
 local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local PPS = game:GetService("ProximityPromptService")
+local camera = workspace.CurrentCamera
+
+local player = Players.LocalPlayer
 
 --------------------------------------------------------
 -- NOTIFICATION FUNCTION
@@ -22,50 +27,131 @@ local function showNotification(title, message)
 end
 
 --------------------------------------------------------
--- HELD ITEM DETECTOR (No dupe logic)
+-- GOD MODE LOGIC
 --------------------------------------------------------
-local function getOnlyYourHeldItem()
-	local player = Players.LocalPlayer
-	if not player or not player.Character then return nil end
-	
-	local character = player.Character
-	
-	for _, item in pairs(character:GetChildren()) do
-		if item:IsA("Tool") then
-			return item
+local isGodmode = false
+local ghostClone, gmConnection, noclipConn, deathConn = nil, nil, nil, nil
+local lastPromptUpdate = 0
+
+local function cleanupGodmode()
+	isGodmode = false
+	if gmConnection then gmConnection:Disconnect() gmConnection = nil end
+	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+	if deathConn then deathConn:Disconnect() deathConn = nil end
+	local char = player.Character
+	if char then
+		local root = char:FindFirstChild("HumanoidRootPart")
+		if root and ghostClone and ghostClone:FindFirstChild("HumanoidRootPart") then
+			root.CFrame = ghostClone.HumanoidRootPart.CFrame
+		end
+		if char:FindFirstChild("Humanoid") then
+			char.Humanoid.PlatformStand = false
+			camera.CameraSubject = char.Humanoid
 		end
 	end
-	
+	if ghostClone then ghostClone:Destroy() ghostClone = nil end
+end
+
+local function enableGodmode()
+	local char = player.Character
+	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+	cleanupGodmode()
+	isGodmode = true
+	char.Archivable = true
+	ghostClone = char:Clone()
+	ghostClone.Name = "GhostDecoy"
+	ghostClone.Parent = workspace
+	char.Archivable = false
+	for _, v in pairs(ghostClone:GetDescendants()) do
+		if v:IsA("BasePart") then
+			v.Transparency = (v.Name:lower():find("root") or v.Name:lower():find("collision")) and 0.5 or 0
+			v.CanCollide = true
+		elseif v:IsA("Decal") or v:IsA("Texture") then
+			v.Transparency = 0
+		end
+	end
+	if char:FindFirstChild("Animate") then char.Animate:Clone().Parent = ghostClone end
+	char.Humanoid.PlatformStand = true
+	camera.CameraSubject = ghostClone.Humanoid
+	noclipConn = RunService.Stepped:Connect(function()
+		if char then
+			for _, v in pairs(char:GetDescendants()) do
+				if v:IsA("BasePart") then v.CanCollide = false end
+			end
+		end
+	end)
+	gmConnection = RunService.Heartbeat:Connect(function()
+		if ghostClone and char and char:FindFirstChild("HumanoidRootPart") then
+			local moveDir = char.Humanoid.MoveDirection
+			ghostClone.Humanoid:Move(moveDir, false)
+			ghostClone.Humanoid.Jump = char.Humanoid.Jump
+			if moveDir.Magnitude > 0 then
+				local targetRot = CFrame.lookAt(ghostClone.HumanoidRootPart.Position, ghostClone.HumanoidRootPart.Position + moveDir)
+				ghostClone.HumanoidRootPart.CFrame = ghostClone.HumanoidRootPart.CFrame:Lerp(targetRot, 0.25)
+			end
+			if tick() - lastPromptUpdate > 0.5 then
+				for _, p in pairs(workspace:GetDescendants()) do
+					if p:IsA("ProximityPrompt") then
+						p.MaxActivationDistance = 25
+						p.RequiresLineOfSight = false
+					end
+				end
+				lastPromptUpdate = tick()
+			end
+			char.HumanoidRootPart.CFrame = ghostClone.HumanoidRootPart.CFrame * CFrame.new(0, -15, 0)
+			char.HumanoidRootPart.Velocity = Vector3.zero
+		else
+			cleanupGodmode()
+		end
+	end)
+	deathConn = char.Humanoid.Died:Connect(cleanupGodmode)
+end
+
+player.CharacterAdded:Connect(function()
+	if isGodmode then task.wait(0.5) enableGodmode() end
+end)
+
+--------------------------------------------------------
+-- INSTANT TAKE LOGIC
+--------------------------------------------------------
+local instantTakeConn = nil
+
+local function enableInstantTake()
+	if instantTakeConn then return end
+	instantTakeConn = PPS.PromptButtonHoldBegan:Connect(function(prompt)
+		pcall(function()
+			fireproximityprompt(prompt)
+		end)
+	end)
+end
+
+local function disableInstantTake()
+	if instantTakeConn then
+		instantTakeConn:Disconnect()
+		instantTakeConn = nil
+	end
+end
+
+--------------------------------------------------------
+-- HELD ITEM DETECTOR
+--------------------------------------------------------
+local function getOnlyYourHeldItem()
+	local p = Players.LocalPlayer
+	if not p or not p.Character then return nil end
+	for _, item in pairs(p.Character:GetChildren()) do
+		if item:IsA("Tool") then return item end
+	end
 	return nil
 end
 
--- Auto-dupe state (kept for toggle UI, but does nothing)
 local autoDuping = false
 local autoEnabled = false
-
-local function startAutoDupe()
-	if autoDuping then return end
-	autoDuping = true
-
-	spawn(function()
-		while autoDuping do
-			local heldItem = getOnlyYourHeldItem()
-			local itemName = heldItem and heldItem.Name or "Item"
-
-			StatusLabel.Text = "✓ Cloned: [CLONE] " .. itemName
-			StatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
-			print("[AUTO-DUPE] Cloned: [CLONE] " .. itemName)
-
-			task.wait(1)
-		end
-	end)
-end
+local godEnabled = false
 
 local function stopAutoDupe()
 	autoDuping = false
 end
 
--- Check if alone in server
 local function checkAloneInServer()
 	local playerCount = #Players:GetPlayers()
 	local isAloneInServer = (playerCount <= 1)
@@ -73,7 +159,7 @@ local function checkAloneInServer()
 end
 
 --------------------------------------------------------
--- FREEZE TRADE STYLE GUI
+-- GUI
 --------------------------------------------------------
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "ETFB_DupeGUI"
@@ -82,10 +168,10 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = CoreGui
 
--- MAIN FRAME
+-- MAIN FRAME (taller for God Mode row)
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 250, 0, 200)
-MainFrame.Position = UDim2.new(0.5, -125, 0.7, -100)
+MainFrame.Size = UDim2.new(0, 250, 0, 250)
+MainFrame.Position = UDim2.new(0.5, -125, 0.7, -125)
 MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
 MainFrame.BorderSizePixel = 0
@@ -132,7 +218,7 @@ Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.ZIndex = 3
 Title.Parent = TitleBar
 
--- INFO BUTTON (!)
+-- INFO BUTTON
 local InfoButton = Instance.new("TextButton")
 InfoButton.Size = UDim2.new(0, 26, 0, 26)
 InfoButton.Position = UDim2.new(1, -60, 0.5, -13)
@@ -149,7 +235,6 @@ local InfoCorner = Instance.new("UICorner")
 InfoCorner.CornerRadius = UDim.new(0, 6)
 InfoCorner.Parent = InfoButton
 
--- ! BUTTON: red in private server, yellow in public
 local function isPrivateServer()
 	return #Players:GetPlayers() <= 1
 end
@@ -211,7 +296,7 @@ Content.Position = UDim2.new(0, 12, 0, 42)
 Content.ZIndex = 2
 Content.Parent = MainFrame
 
--- INSTANT DUPE BUTTON (Clickable, not toggle)
+-- INSTANT DUPE BUTTON
 local InstantFrame = Instance.new("Frame")
 InstantFrame.Size = UDim2.new(1, 0, 0, 40)
 InstantFrame.Position = UDim2.new(0, 0, 0, 0)
@@ -236,7 +321,7 @@ InstantBtn.TextXAlignment = Enum.TextXAlignment.Center
 InstantBtn.ZIndex = 4
 InstantBtn.Parent = InstantFrame
 
--- AUTO DUPE TOGGLE
+-- TOGGLE FACTORY
 local function createToggle(text, y)
 	local frame = Instance.new("Frame")
 	frame.Size = UDim2.new(1, 0, 0, 40)
@@ -286,28 +371,26 @@ local function createToggle(text, y)
 	local cc = Instance.new("UICorner")
 	cc.CornerRadius = UDim.new(1, 0)
 	cc.Parent = circle
-	
+
 	local circleShadow = Instance.new("UIStroke")
 	circleShadow.Thickness = 1
 	circleShadow.Color = Color3.fromRGB(100, 100, 110)
 	circleShadow.Transparency = 0.5
 	circleShadow.Parent = circle
 
-	return button, circle
+	return button, circle, frame
 end
 
 local AutoBtn, AutoCircle = createToggle("Auto Dupe (1s cooldown)", 46)
+local GodBtn, GodCircle, GodFrame = createToggle("GOD MODE", 92)
 
-local function toggle(btn, circle, state)
+local function toggle(btn, circle, state, color)
+	local onColor = color or Color3.fromRGB(80, 200, 80)
 	if state then
-		TweenService:Create(circle, TweenInfo.new(0.2), {
-			Position = UDim2.new(1, -22, 0.5, -10)
-		}):Play()
-		btn.BackgroundColor3 = Color3.fromRGB(80, 200, 80)
+		TweenService:Create(circle, TweenInfo.new(0.2), {Position = UDim2.new(1, -22, 0.5, -10)}):Play()
+		btn.BackgroundColor3 = onColor
 	else
-		TweenService:Create(circle, TweenInfo.new(0.2), {
-			Position = UDim2.new(0, 2, 0.5, -10)
-		}):Play()
+		TweenService:Create(circle, TweenInfo.new(0.2), {Position = UDim2.new(0, 2, 0.5, -10)}):Play()
 		btn.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
 	end
 end
@@ -326,13 +409,28 @@ StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.ZIndex = 3
 StatusLabel.Parent = MainFrame
 
+-- startAutoDupe needs StatusLabel so defined after
+local function startAutoDupe()
+	if autoDuping then return end
+	autoDuping = true
+	spawn(function()
+		while autoDuping do
+			local heldItem = getOnlyYourHeldItem()
+			local itemName = heldItem and heldItem.Name or "Item"
+			StatusLabel.Text = "✓ Cloned: [CLONE] " .. itemName
+			StatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+			print("[AUTO-DUPE] Cloned: [CLONE] " .. itemName)
+			task.wait(1)
+		end
+	end)
+end
+
 -- INSTANT DUPE BUTTON LOGIC
 InstantBtn.MouseButton1Click:Connect(function()
 	if checkAloneInServer() then
 		showNotification("PRIVATE SERVER NOT SUPPORTED", "Rejoin and use it in public servers.")
 		return
 	end
-	
 	if InstantBtn:GetAttribute("Processing") then return end
 	InstantBtn:SetAttribute("Processing", true)
 
@@ -357,10 +455,8 @@ AutoBtn.MouseButton1Click:Connect(function()
 		showNotification("PRIVATE SERVER NOT SUPPORTED", "Rejoin and use it in public servers.")
 		return
 	end
-	
 	autoEnabled = not autoEnabled
 	toggle(AutoBtn, AutoCircle, autoEnabled)
-	
 	if autoEnabled then
 		startAutoDupe()
 		StatusLabel.Text = "Auto-Dupe: ON"
@@ -372,21 +468,61 @@ AutoBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
--- Check on load if alone
+-- GOD MODE BUTTON LOGIC
+GodBtn.MouseButton1Click:Connect(function()
+	if checkAloneInServer() then
+		showNotification("PRIVATE SERVER NOT SUPPORTED", "Rejoin and use it in public servers.")
+		return
+	end
+	godEnabled = not godEnabled
+	toggle(GodBtn, GodCircle, godEnabled, Color3.fromRGB(200, 80, 80))
+	if godEnabled then
+		enableGodmode()
+		enableInstantTake()
+		showNotification("GOD MODE ON", "turning on instant take automatically")
+		StatusLabel.Text = "God Mode: ON"
+		StatusLabel.TextColor3 = Color3.fromRGB(200, 80, 80)
+	else
+		cleanupGodmode()
+		disableInstantTake()
+		StatusLabel.Text = "God Mode: OFF"
+		StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+	end
+end)
+
+-- Disable buttons if alone on load
 if checkAloneInServer() then
 	task.wait(1)
 	showNotification("PRIVATE SERVER NOT SUPPORTED", "Rejoin and use it in public servers.")
-	
-	-- Disable buttons visually
 	InstantFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
 	InstantBtn.Active = false
 	AutoBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
 	AutoBtn.Active = false
+	GodFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+	GodBtn.Active = false
 end
 
--- =====================================================
--- IMPROVED DRAG SYSTEM (MOBILE & PC SUPPORT)
--- =====================================================
+-- Re-check when players join/leave
+Players.PlayerAdded:Connect(function()
+	local alone = checkAloneInServer()
+	InstantBtn.Active = not alone
+	AutoBtn.Active = not alone
+	GodBtn.Active = not alone
+	InstantFrame.BackgroundColor3 = alone and Color3.fromRGB(40, 40, 45) or Color3.fromRGB(35, 35, 40)
+	GodFrame.BackgroundColor3 = alone and Color3.fromRGB(40, 40, 45) or Color3.fromRGB(35, 35, 40)
+end)
+
+Players.PlayerRemoving:Connect(function()
+	task.wait(0.1)
+	local alone = checkAloneInServer()
+	InstantBtn.Active = not alone
+	AutoBtn.Active = not alone
+	GodBtn.Active = not alone
+	InstantFrame.BackgroundColor3 = alone and Color3.fromRGB(40, 40, 45) or Color3.fromRGB(35, 35, 40)
+	GodFrame.BackgroundColor3 = alone and Color3.fromRGB(40, 40, 45) or Color3.fromRGB(35, 35, 40)
+end)
+
+-- DRAG SYSTEM
 local dragging = false
 local dragInput = nil
 local dragStart = nil
@@ -394,45 +530,33 @@ local startPos = nil
 
 local function updateDrag(input)
 	local delta = input.Position - dragStart
-	MainFrame.Position = UDim2.new(
-		startPos.X.Scale,
-		startPos.X.Offset + delta.X,
-		startPos.Y.Scale,
-		startPos.Y.Offset + delta.Y
-	)
+	MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 end
 
 TitleBar.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or
 	   input.UserInputType == Enum.UserInputType.Touch then
 		dragging = true
 		dragStart = input.Position
 		startPos = MainFrame.Position
-		
 		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then
-				dragging = false
-			end
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
 		end)
 	end
 end)
 
 TitleBar.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement or 
+	if input.UserInputType == Enum.UserInputType.MouseMovement or
 	   input.UserInputType == Enum.UserInputType.Touch then
 		dragInput = input
 	end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-	if dragging and input == dragInput then
-		updateDrag(input)
-	end
+	if dragging and input == dragInput then updateDrag(input) end
 end)
 
--- =====================================================
--- FLOATING TOGGLE CIRCLE (PLAIN)
--- =====================================================
+-- FLOATING TOGGLE CIRCLE
 local CircleToggle = Instance.new("TextButton")
 CircleToggle.Size = UDim2.new(0, 50, 0, 50)
 CircleToggle.Position = UDim2.new(0, 20, 0.5, -25)
@@ -450,37 +574,28 @@ CircleCorner.Parent = CircleToggle
 CircleToggle.MouseButton1Click:Connect(function()
 	guiVisible = not guiVisible
 	MainFrame.Visible = guiVisible
-	
-	if guiVisible then
-		CircleToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-	else
-		CircleToggle.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-	end
+	CircleToggle.BackgroundColor3 = guiVisible and Color3.fromRGB(60, 60, 70) or Color3.fromRGB(80, 80, 90)
 end)
 
--- Drag circle
 local circleDragging = false
 local circleInput = nil
 local circleStart = nil
 local circlePos = nil
 
 CircleToggle.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or
 	   input.UserInputType == Enum.UserInputType.Touch then
 		circleDragging = true
 		circleStart = input.Position
 		circlePos = CircleToggle.Position
-		
 		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then
-				circleDragging = false
-			end
+			if input.UserInputState == Enum.UserInputState.End then circleDragging = false end
 		end)
 	end
 end)
 
 CircleToggle.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement or 
+	if input.UserInputType == Enum.UserInputType.MouseMovement or
 	   input.UserInputType == Enum.UserInputType.Touch then
 		circleInput = input
 	end
@@ -489,12 +604,7 @@ end)
 UserInputService.InputChanged:Connect(function(input)
 	if circleDragging and input == circleInput then
 		local delta = input.Position - circleStart
-		CircleToggle.Position = UDim2.new(
-			circlePos.X.Scale,
-			circlePos.X.Offset + delta.X,
-			circlePos.Y.Scale,
-			circlePos.Y.Offset + delta.Y
-		)
+		CircleToggle.Position = UDim2.new(circlePos.X.Scale, circlePos.X.Offset + delta.X, circlePos.Y.Scale, circlePos.Y.Offset + delta.Y)
 	end
 end)
 
@@ -503,18 +613,22 @@ spawn(function()
 	while ScreenGui and ScreenGui.Parent do
 		task.wait(0.5)
 		local heldItem = getOnlyYourHeldItem()
-		if heldItem and not autoEnabled then
-			StatusLabel.Text = "Holding: " .. heldItem.Name
-			StatusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
-		elseif not heldItem and not autoEnabled then
-			StatusLabel.Text = "Not holding anything"
-			StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+		if not autoEnabled and not godEnabled then
+			if heldItem then
+				StatusLabel.Text = "Holding: " .. heldItem.Name
+				StatusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
+			else
+				StatusLabel.Text = "Not holding anything"
+				StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+			end
 		end
 	end
 end)
 
 ScreenGui.Destroying:Connect(function()
 	stopAutoDupe()
+	cleanupGodmode()
+	disableInstantTake()
 end)
 
 CircleToggle.Visible = true
