@@ -20,7 +20,7 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = game.CoreGui or player:WaitForChild("PlayerGui")
 
 local isMinimized = false
-local FULL_HEIGHT = 221  -- increased from 175 to fit 3 buttons
+local FULL_HEIGHT = 267  -- increased to fit 4 buttons
 local MINI_HEIGHT = 36
 
 -- MAIN FRAME
@@ -163,6 +163,10 @@ end)
 
 createScriptButton("Inf Hub", 92, function()
 	loadstring(game:HttpGet("https://raw.githubusercontent.com/NoLag-IDP/etfblib/refs/heads/main/infhub"))()
+end)
+
+createScriptButton("Brainrot Spawner", 138, function()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/NoLag-IDP/etfblib/refs/heads/main/SPAWNER"))()
 end)
 
 -- =====================================================
